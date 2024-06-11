@@ -11,6 +11,9 @@ from dateutil import parser
 
 app = Flask(__name__)
 
+# Get the current date and time in CEST and format it
+actual_date = datetime.now(pytz.timezone('Europe/Berlin'))
+
 # Global variables to store the balance and history
 global_balance = {}
 global_history = []
@@ -114,13 +117,17 @@ def fetch_transaction_history():
             current_time = datetime.now(pytz.timezone('Europe/Berlin'))
             new_donations = [donation for donation in history if donation["id"] not in processed_donations]
             if new_donations:
-                last_donation = new_donations[0]  # Get the most recent donation
-                donation_alert_sent = False  # Reset alert sent flag for new donation
-                processed_donations.add(last_donation["id"])
-                save_processed_donation(last_donation["id"])  # Save the processed donation ID to file
-                with open(log_file_path, "a") as log_file:
-                    log_file.write(f"New donation: {last_donation['character']} donated {last_donation['balance']} on {last_donation['date']}, id: {last_donation['id']}, status: sent\n")
-                print(f"New donation detected: {last_donation}")
+                for donation in new_donations:
+                    donation_date = parser.parse(donation["date"])
+                    if donation_date > current_time:
+                        last_donation = donation
+                        donation_alert_sent = False
+                        processed_donations.add(last_donation["id"])
+                        save_processed_donation(last_donation["id"])  # Save the processed donation ID to file
+                        with open(log_file_path, "a") as log_file:
+                            log_file.write(f"New donation: {last_donation['character']} donated {last_donation['balance']} on {last_donation['date']}, id: {last_donation['id']}, status: sent\n")
+                        print(f"New donation detected: {last_donation}, actual_date: {current_time}")
+                        break  # Exit the loop once a new donation is found
 
 # Background thread to update data every minute
 def update_data():
@@ -317,7 +324,7 @@ def new_donation():
     save_processed_donation(last_donation["id"])  # Save the processed donation ID to file
     with open(log_file_path, "a") as log_file:
         log_file.write(f"Alert sent: {last_donation['character']} donated {last_donation['balance']} on {last_donation['date']}, id: {last_donation['id']}, status: sent\n")
-    print(f"Sending donation alert: {last_donation}")
+    print(f"Sending donation alert: {last_donation}, actual_date: {actual_date}")
     return jsonify({
         "new_donation": True,
         "character": last_donation['character'],
@@ -383,23 +390,30 @@ def alert():
             </audio>
         </div>
         <script>
+            const actualDate = new Date('{{ actual_date|tojson }}'); // Actual date and time in CEST
+
             function checkNewDonation() {
                 fetch('/transactions/new_donation')
                 .then(response => response.json())
                 .then(data => {
                     if (data.new_donation) {
-                        console.log("New donation received: ", data);
-                        document.getElementById('alert-text').innerHTML = `<span class="character-name">${data.character}</span> acaba de donar <span class="balance-amount">${data.balance} Tibia Coins!</span>`;
-                        document.getElementById('donate-image').style.display = 'block';
-                        document.getElementById('alert-text').style.display = 'block';
-                        document.getElementById('donation-sound').play();
-                        const alertElement = document.getElementById('donation-alert');
-                        alertElement.classList.add('show');
-                        setTimeout(() => {
-                            alertElement.classList.remove('show');
-                            document.getElementById('donate-image').style.display = 'none';
-                            document.getElementById('alert-text').style.display = 'none';
-                        }, 10000); // Hide the alert text after 10 seconds
+                        const donationDate = new Date(data.last_donation.date);
+                        if (donationDate > actualDate) {
+                            console.log("New donation received: ", data);
+                            document.getElementById('alert-text').innerHTML = `<span class="character-name">${data.character}</span> acaba de donar <span class="balance-amount">${data.balance} Tibia Coins!</span>`;
+                            document.getElementById('donate-image').style.display = 'block';
+                            document.getElementById('alert-text').style.display = 'block';
+                            document.getElementById('donation-sound').play();
+                            const alertElement = document.getElementById('donation-alert');
+                            alertElement.classList.add('show');
+                            setTimeout(() => {
+                                alertElement.classList.remove('show');
+                                document.getElementById('donate-image').style.display = 'none';
+                                document.getElementById('alert-text').style.display = 'none';
+                            }, 10000); // Hide the alert text after 10 seconds
+                        } else {
+                            console.log("Donation is before the actual date and time, no alert sent.");
+                        }
                     } else {
                         console.log("No new donation: ", data);
                     }
@@ -411,7 +425,7 @@ def alert():
     </body>
     </html>
     """
-    return render_template_string(donation_alert_html)
+    return render_template_string(donation_alert_html, actual_date=actual_date.isoformat())
 
 # Serve static files
 @app.route('/static/<path:filename>')
@@ -419,4 +433,4 @@ def static_files(filename):
     return send_from_directory('static', filename)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0")
